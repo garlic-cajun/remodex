@@ -28,16 +28,21 @@ struct TurnToolbarContent: ToolbarContent {
     let isRunningGitAction: Bool
     let showsDiscardRuntimeChangesAndSync: Bool
     let gitSyncState: String?
+    let projectActions: [ProjectCustomAction]
+    let runningProjectActionID: String?
+    let succeededProjectActionID: String?
+    let isProjectActionEnabled: Bool
     var onTapMacHandoff: (() -> Void)?
     var onTapWorktreeHandoff: (() -> Void)?
     var onTapNewChat: (() -> Void)?
     var onTapRepoDiff: (() -> Void)?
     let onGitAction: (TurnGitActionKind) -> Void
+    let onProjectAction: (ProjectCustomAction) -> Void
 
     @Binding var isShowingPathSheet: Bool
 
     var body: some ToolbarContent {
-        let hasTrailingCluster = repoDiffTotals != nil || showsGitActions
+        let hasTrailingCluster = repoDiffTotals != nil || showsGitActions || !projectActions.isEmpty
         let isThreadActionLoading = isHandingOffToMac || isStartingNewChat
         let canTapMacHandoff = onTapMacHandoff != nil && !isThreadActionLoading
         let canTapWorktreeHandoff = onTapWorktreeHandoff != nil
@@ -121,7 +126,7 @@ struct TurnToolbarContent: ToolbarContent {
             }
         }
 
-        if repoDiffTotals != nil || showsGitActions {
+        if repoDiffTotals != nil || showsGitActions || !projectActions.isEmpty {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let repoDiffTotals {
                     TurnToolbarDiffTotalsLabel(
@@ -139,6 +144,16 @@ struct TurnToolbarContent: ToolbarContent {
                         showsDiscardRuntimeChangesAndSync: showsDiscardRuntimeChangesAndSync,
                         gitSyncState: gitSyncState,
                         onSelect: onGitAction
+                    )
+                }
+
+                if !projectActions.isEmpty {
+                    TurnProjectActionsToolbarButton(
+                        actions: projectActions,
+                        runningActionID: runningProjectActionID,
+                        succeededActionID: succeededProjectActionID,
+                        isEnabled: isProjectActionEnabled,
+                        onSelect: onProjectAction
                     )
                 }
             }
