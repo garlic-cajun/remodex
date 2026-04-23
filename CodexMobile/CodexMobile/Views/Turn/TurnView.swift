@@ -43,6 +43,11 @@ struct TurnView: View {
     @State private var voiceRecoveryReason: CodexVoiceFailureReason?
     @State private var isShowingVoiceSetupSheet = false
     @StateObject private var voiceTranscriptionManager = GPTVoiceTranscriptionManager()
+    @State private var projectCustomActions: [ProjectCustomAction] = []
+    @State private var runningProjectActionID: String?
+    @State private var succeededProjectActionID: String?
+    @State private var projectActionErrorMessage: String?
+    @State private var pendingProjectActionConfirmation: ProjectCustomAction?
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
@@ -78,6 +83,7 @@ struct TurnView: View {
             gitWorkingDirectory: gitWorkingDirectory
         )
         let disabledGitActions: Set<TurnGitActionKind> = viewModel.canCreatePullRequest ? [] : [.createPR]
+        let isProjectActionEnabled = codex.isConnected && !isThreadRunning
         let onTapMacHandoff: (() -> Void)? = codex.isConnected ? {
             isShowingMacHandoffConfirm = true
         } : nil
@@ -170,6 +176,10 @@ struct TurnView: View {
                 isRunningGitAction: viewModel.isRunningGitAction,
                 showsDiscardRuntimeChangesAndSync: viewModel.shouldShowDiscardRuntimeChangesAndSync,
                 gitSyncState: viewModel.gitSyncState,
+                projectActions: projectCustomActions,
+                runningProjectActionID: runningProjectActionID,
+                succeededProjectActionID: succeededProjectActionID,
+                isProjectActionEnabled: isProjectActionEnabled,
                 onTapMacHandoff: onTapMacHandoff,
                 onTapWorktreeHandoff: onTapWorktreeHandoff,
                 onTapNewChat: onTapNewChat,
@@ -180,6 +190,9 @@ struct TurnView: View {
                         isThreadRunning: isThreadRunning,
                         gitWorkingDirectory: gitWorkingDirectory
                     )
+                },
+                onProjectAction: { action in
+                    runProjectCustomAction(action, workingDirectory: gitWorkingDirectory)
                 },
                 isShowingPathSheet: $isShowingThreadPathSheet
             )
@@ -246,6 +259,7 @@ struct TurnView: View {
             photoPickerItems: viewModel.photoPickerItems,
             onTask: {
                 await prepareThreadIfReady(gitWorkingDirectory: gitWorkingDirectory)
+                await refreshProjectCustomActions(workingDirectory: gitWorkingDirectory)
             },
             onInitialAppear: {
                 handleInitialAppear(activeTurnID: activeTurnID)
@@ -279,6 +293,9 @@ struct TurnView: View {
                 clearVoiceRecovery()
                 guard !wasConnected, isConnected else { return }
                 viewModel.flushQueueIfPossible(codex: codex, threadID: thread.id)
+                Task { @MainActor in
+                    await refreshProjectCustomActions(workingDirectory: gitWorkingDirectory)
+                }
                 guard showsGitControls else { return }
                 viewModel.refreshGitBranchTargets(
                     codex: codex,
@@ -413,6 +430,32 @@ struct TurnView: View {
             }
         )
         .alert(
+            pendingProjectActionConfirmation?.label ?? "Run action",
+            isPresented: pendingProjectActionConfirmationPresentedBinding,
+            presenting: pendingProjectActionConfirmation
+        ) { action in
+            Button("Cancel", role: .cancel) {
+                pendingProjectActionConfirmation = nil
+            }
+
+            Button("Run", role: .destructive) {
+                pendingProjectActionConfirmation = nil
+                runProjectCustomAction(action, workingDirectory: currentResolvedThread.gitWorkingDirectory, bypassConfirmationPrompt: true)
+            }
+        } message: { _ in
+            Text("Are you sure you want to run this project action on your Mac bridge?")
+        }
+        .alert(
+            "Project Action Failed",
+            isPresented: projectActionErrorPresentedBinding
+        ) {
+            Button("OK", role: .cancel) {
+                projectActionErrorMessage = nil
+            }
+        } message: {
+            Text(projectActionErrorMessage ?? "Custom action failed.")
+        }
+        .alert(
             checkedOutElsewhereAlert?.title ?? "Branch already open elsewhere",
             isPresented: checkedOutElsewhereAlertIsPresented,
             presenting: checkedOutElsewhereAlert
@@ -509,6 +552,88 @@ struct TurnView: View {
             get: { viewModel.isScrolledToBottom },
             set: { viewModel.isScrolledToBottom = $0 }
         )
+    }
+
+    private var pendingProjectActionConfirmationPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { pendingProjectActionConfirmation != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingProjectActionConfirmation = nil
+                }
+            }
+        )
+    }
+
+    private var projectActionErrorPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { projectActionErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    projectActionErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    private func refreshProjectCustomActions(workingDirectory: String?) async {
+        guard codex.isConnected else {
+            projectCustomActions = []
+            return
+        }
+
+        let service = ProjectCustomActionsService(codex: codex, workingDirectory: workingDirectory)
+        do {
+            projectCustomActions = try await service.listActions()
+        } catch {
+            projectCustomActions = []
+        }
+    }
+
+    private func runProjectCustomAction(
+        _ action: ProjectCustomAction,
+        workingDirectory: String?,
+        bypassConfirmationPrompt: Bool = false
+    ) {
+        guard !action.confirmationRequired || bypassConfirmationPrompt else {
+            pendingProjectActionConfirmation = action
+            return
+        }
+
+        guard runningProjectActionID == nil else { return }
+        runningProjectActionID = action.id
+        succeededProjectActionID = nil
+
+        Task { @MainActor in
+            defer { runningProjectActionID = nil }
+
+            let service = ProjectCustomActionsService(codex: codex, workingDirectory: workingDirectory)
+            do {
+                let result = try await service.runAction(actionID: action.id, confirmed: true)
+                switch result.actionType {
+                case .openURL:
+                    guard let urlString = result.url,
+                          let url = URL(string: urlString) else {
+                        throw ProjectCustomActionsError.invalidURL
+                    }
+                    _ = openURL(url)
+                case .runCommand, .sendTmuxKeys:
+                    break
+                }
+
+                succeededProjectActionID = action.id
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    if succeededProjectActionID == action.id {
+                        succeededProjectActionID = nil
+                    }
+                }
+            } catch let error as ProjectCustomActionsError {
+                projectActionErrorMessage = error.errorDescription ?? "Custom action failed."
+            } catch {
+                projectActionErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     // Fetches the repo-wide local patch on demand so the toolbar pill opens the same diff UI as turn changes.

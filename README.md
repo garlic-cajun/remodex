@@ -20,6 +20,7 @@ Control [Codex](https://openai.com/index/codex/) from your iPhone. Remodex is a 
 - Queue follow-up prompts while a turn is still running
 - In-app notifications when turns finish or need attention
 - Git actions from your phone, including commit, push, pull, and branch switching
+- Project-scoped custom actions (e.g. Reload Expo, Restart Expo, Open Preview)
 - Reasoning controls to tune how much thinking Codex uses
 - Access controls with On-Request or Full access
 - Photo attachments from camera or library
@@ -33,6 +34,8 @@ The repo stays local-first and self-host friendly: the iOS app source does not e
 Today, the background daemon / trusted auto-reconnect flow is implemented for macOS. Self-hosted relay setups still work on other OSes, but they currently use the foreground bridge flow instead of the macOS `launchd` service path.
 
 If you want the public-repo distribution model explained clearly, read [SELF_HOSTING_MODEL.md](SELF_HOSTING_MODEL.md).
+
+For project-scoped mobile workflow actions (Reload Expo / Restart Expo / Open Preview), see [Docs/project-custom-actions.md](Docs/project-custom-actions.md).
 
 > **I am very early in this project. Expect bugs.**
 >
